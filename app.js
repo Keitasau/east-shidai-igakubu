@@ -1,670 +1,970 @@
-// 医学部英語 重要語彙マスター — app.js
-// ====================================================
-// 音声トラブル防止の設計ポイント：
-//   1. speak() は必ず cancel→80ms待機→発話（Chromiumバグ対策）
-//   2. モード切替・画面遷移時に stopSpeak() を冒頭で呼ぶ
-//   3. リスニングモード遷移後は 150ms 余分に待機してから描画・発音
-//   4. listenReveal() は描画完了を待って 200ms 後に発音
-//   5. listenRate() / nextQuiz() の冒頭で stopSpeak()
-//   6. visibilitychange でタブ非表示時に自動停止
-//   7. Chrome 14秒バグ対策：10秒ごとに pause/resume
-//   8. 発音ボタンはトグル動作（発話中に押すと停止）
-// ====================================================
+'use strict';
 
-const STORAGE_KEY = 'mvm_v1';
-
-let State = {
-  vocab:          null,
-  progress:       {},   // { wordId: 'known' | 'weak' }
-  streak:         0,
-  lastStudyDate:  null,
-  currentTopic:   null,
-  currentMode:    null,
-  studyQueue:     [],
-  studyIdx:       0,
-  studyFlipped:   false,
-  quizQueue:      [],
-  quizIdx:        0,
-  quizScore:      0,
-  quizAnswered:   false,
-  listenQueue:    [],
-  listenIdx:      0,
-  listenRevealed: false,
+// ============================================================
+// STATE
+// ============================================================
+const State = {
+  vocab: [],
+  progress: {},
+  sessions: {},
+  weakWords: new Set(),
+  currentScreen: 'screen-home',
 };
 
-// =====================================================
+const STORAGE_KEY = 'mvm_v1';
+const TOTAL = 512;
+const SMALL_STEP_SIZE = 10;
+
+// Topic → creature/environment config (Medical edition)
+const TOPIC_META = {
+  'Medical Science':      {
+    emoji: '🏥', color: '#29b6f6',
+    creatures: ['🩺','💊','🧬','🔬','🩻'],
+    corals: ['💊','🩺','🔬','🧪'],
+    bgCreature: '🩺',
+    label: '臨床・免疫・神経・腫瘍'
+  },
+  'Public Health Sea':    {
+    emoji: '🌍', color: '#66bb6a',
+    creatures: ['🦠','💉','🌍','🏥','🧪'],
+    corals: ['🌿','🦠','💉','🌊'],
+    bgCreature: '🌍',
+    label: '感染症・環境・社会'
+  },
+  'Mind & Brain Bay':     {
+    emoji: '🧠', color: '#ce93d8',
+    creatures: ['🧠','💭','🔮','🦋','💡'],
+    corals: ['🌿','💜','🌸','🍄'],
+    bgCreature: '🧠',
+    label: '認知・記憶・感情・行動'
+  },
+  'Bioethics Abyss':      {
+    emoji: '⚖️', color: '#ef5350',
+    creatures: ['⚖️','📜','🕊️','🏛️','🔬'],
+    corals: ['🪸','📜','🕊️','🌊'],
+    bgCreature: '⚖️',
+    label: '同意・移植・倫理哲学'
+  },
+  'Science Reef':         {
+    emoji: '🔬', color: '#26c6da',
+    creatures: ['🦕','🌿','🔭','🦋','🐢'],
+    corals: ['🌿','🦎','🍃','🌳'],
+    bgCreature: '🔬',
+    label: '進化・生態・気候・技術'
+  },
+  'Academic Deep':        {
+    emoji: '📚', color: '#ffd54f',
+    creatures: ['📚','✍️','🎓','💡','🔍'],
+    corals: ['📜','🌿','⭐','🪸'],
+    bgCreature: '📚',
+    label: '論証・批判・哲学・研究語'
+  },
+};
+
+// Memory tip templates for wrong answers
+function buildMemoryTip(w) {
+  const tips = [];
+  if (w.etymology) {
+    tips.push(`🔤 語源ヒント: ${w.etymology.split('；')[0]}`);
+  }
+  if (w.derivatives && w.derivatives.length) {
+    tips.push(`🔗 関連語: ${w.derivatives.slice(0,2).join('、')}`);
+  }
+  if (w.example) {
+    // Take first 60 chars of example as context
+    const ex = w.example.length > 70 ? w.example.slice(0,70)+'...' : w.example;
+    tips.push(`📖 例文: ${ex}`);
+  }
+  return tips;
+}
+
+const SHARK_CORRECT = [
+  "Great Dive! 🦈", "Concept Found!", "Excellent!", "Ocean Brain Activated!",
+  "That's the way! 🌊", "Splash! Perfect!", "Deep Knowledge!", "Surfing Smart!",
+];
+const SHARK_WRONG = [
+  "Keep swimming! 🦈", "Almost there...", "Next wave~", "Don't give up!",
+  "You'll get it! 💪", "Keep going!", "One more dive!",
+];
+const SHARK_HOME = [
+  "Let's master medical vocab! 🏥", "Ready for today's session?",
+  "512 words await! 🌊", "Dive deep into medical English!",
+  "Your medical future starts here!", "Let's explore the deep!",
+];
+
+// Correct burst emojis by topic (Waseda Bunka edition)
+const BURST_CORRECT = {
+  'Medical Science':    ['🩺','✨','💊','💡'],
+  'Public Health Sea':  ['🌍','✨','💉','🌿'],
+  'Mind & Brain Bay':   ['🧠','✨','💭','💜'],
+  'Bioethics Abyss':    ['⚖️','✨','📜','❤️'],
+  'Science Reef':       ['🔬','✨','🦋','🌿'],
+  'Academic Deep':      ['📚','✨','🎓','💡'],
+};
+
+// ============================================================
 // PERSISTENCE
-// =====================================================
-function save() {
+// ============================================================
+function saveState() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       progress: State.progress,
-      streak: State.streak,
-      lastStudyDate: State.lastStudyDate,
+      sessions: State.sessions,
+      weakWords: [...State.weakWords],
     }));
   } catch(e) {}
 }
-function load() {
+
+function loadState() {
   try {
-    const d = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    if (d.progress)       State.progress = d.progress;
-    if (d.streak)         State.streak = d.streak;
-    if (d.lastStudyDate)  State.lastStudyDate = d.lastStudyDate;
-  } catch(e) {}
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.progress) State.progress = data.progress;
+    if (data.sessions) State.sessions = data.sessions;
+    if (data.weakWords) State.weakWords = new Set(data.weakWords);
+  } catch(e) {
+    State.progress = {}; State.sessions = {}; State.weakWords = new Set();
+  }
 }
 
-// =====================================================
-// VOICE ENGINE — トラブル防止設計
-// =====================================================
-let _voice      = null;
-let _spkTimer   = null;
-let _kaTimer    = null;
-let _isSpeaking = false;
+// ============================================================
+// APP
+// ============================================================
+const App = {
+  sessionWords: [],
+  sessionMode: 'flashcard',
+  sessionIndex: 0,
+  sessionCorrect: 0,
+  sessionSource: 'day',
+  sessionTopic: null,
+  sessionDay: null,
+  quizTimer: null,
+  advanceTimer: null,
+  quizTimerLeft: 10,
+  quizCurrentWord: null,
+  quizAnswered: false,
+  fcFlipped: false,
+  pendingTopicFull: null, // topic string for modal
 
-function initVoice() {
-  const upd = () => {
-    const vs = speechSynthesis.getVoices();
-    const en = vs.filter(v => v.lang.startsWith('en'));
-    _voice = en.find(v => v.lang === 'en-US' && v.name.includes('Google'))
-          || en.find(v => v.lang === 'en-US')
-          || en[0] || vs[0];
-  };
-  speechSynthesis.addEventListener('voiceschanged', upd);
-  upd(); setTimeout(upd, 600); setTimeout(upd, 1800);
-}
+  async init() {
+    loadState();
+    try {
+      const res = await fetch('vocabulary.json');
+      State.vocab = await res.json();
+    } catch(e) {
+      console.error('Failed to load vocabulary.json', e);
+      State.vocab = [];
+    }
+    this.spawnBubbles();
+    this.spawnParticles();
+    this.updateBackground(null);
+    this.updateHeader();
+    this.renderHome();
+    this.renderTopics();
+    this.renderReview();
+    this.showScreen('screen-home');
+  },
 
-function speak(text, onDone) {
-  if (!text) { if (onDone) onDone(); return; }
+  // ---- SCREEN NAV ----
+  showScreen(id) {
+    this.stopSpeak(); // モード切替時に必ず停止
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    const el = document.getElementById(id);
+    if (el) { el.classList.add('active'); State.currentScreen = id; }
+    window.scrollTo(0,0);
+  },
 
-  // ① 前の発話を確実にキャンセル
-  speechSynthesis.cancel();
-  clearTimeout(_spkTimer);
-  clearInterval(_kaTimer);
-  _isSpeaking = false;
-  updSpeakUI(false);
+  // ---- BACKGROUND CREATURES ----
+  updateBackground(topic) {
+    const meta = topic ? TOPIC_META[topic] : null;
 
-  // ② 80ms 待機後に発話（Chromiumバグ対策：これがないと無音になる）
-  _spkTimer = setTimeout(() => {
-    const u = new SpeechSynthesisUtterance(text);
-    if (_voice) u.voice = _voice;
-    u.lang = 'en-US'; u.rate = 0.95; u.pitch = 1; u.volume = 1;
+    // Gradient
+    document.body.setAttribute('data-topic', topic || '');
 
-    u.onstart = () => { _isSpeaking = true; updSpeakUI(true); };
-    u.onend   = () => {
-      _isSpeaking = false; updSpeakUI(false);
-      clearInterval(_kaTimer);
-      if (onDone) onDone();
-    };
-    u.onerror = (e) => {
-      // 'interrupted' は stopSpeak() によるキャンセルなので無視
-      if (e.error !== 'interrupted') {
-        _isSpeaking = false; updSpeakUI(false);
+    // Creatures
+    const layer = document.getElementById('creatures-layer');
+    if (layer) {
+      layer.innerHTML = '';
+      const creatures = meta ? meta.creatures : ['🐠','🐟','🐡','🦑','🐙'];
+      const count = 5 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < count; i++) {
+        const c = document.createElement('div');
+        c.className = 'creature' + (i === 0 ? ' large' : i > 3 ? ' small' : '');
+        const emoji = creatures[i % creatures.length];
+        c.textContent = emoji;
+        const top = 8 + Math.random() * 75;
+        const dur = 18 + Math.random() * 25;
+        const delay = -Math.random() * dur;
+        const dir = Math.random() > 0.5 ? 1 : -1;
+        c.style.cssText = `
+          top:${top}%;
+          animation-duration:${dur}s;
+          animation-delay:${delay}s;
+          ${dir < 0 ? 'animation-direction:reverse;' : ''}
+        `;
+        layer.appendChild(c);
       }
-      clearInterval(_kaTimer);
-      if (onDone) onDone();
-    };
+    }
 
-    speechSynthesis.speak(u);
+    // Corals
+    const coral = document.getElementById('coral-layer');
+    if (coral) {
+      coral.innerHTML = '';
+      const corals = meta ? meta.corals : ['🪸','🌿','🐚','🌊'];
+      const positions = [5,15,25,40,55,68,78,88,95];
+      positions.forEach((pos, i) => {
+        const c = document.createElement('div');
+        c.className = 'coral';
+        c.textContent = corals[i % corals.length];
+        const size = 24 + Math.random() * 20;
+        const dur = 3 + Math.random() * 3;
+        const delay = -Math.random() * dur;
+        c.style.cssText = `
+          left:${pos}%;
+          font-size:${size}px;
+          animation-duration:${dur}s;
+          animation-delay:${delay}s;
+        `;
+        coral.appendChild(c);
+      });
+    }
+  },
 
-    // ③ Chrome 14秒バグ対策：10秒ごとに pause/resume
-    _kaTimer = setInterval(() => {
-      if (speechSynthesis.speaking) {
-        speechSynthesis.pause();
-        speechSynthesis.resume();
+  spawnBubbles() {
+    const container = document.getElementById('bubbles');
+    if (!container) return;
+    for (let i = 0; i < 20; i++) {
+      const b = document.createElement('div');
+      b.className = 'bubble';
+      const size = 6 + Math.random() * 18;
+      b.style.cssText = `
+        width:${size}px; height:${size}px;
+        left:${Math.random()*100}%;
+        bottom:-${size}px;
+        animation-duration:${10+Math.random()*15}s;
+        animation-delay:-${Math.random()*25}s;
+      `;
+      container.appendChild(b);
+    }
+  },
+
+  spawnParticles() {
+    const container = document.getElementById('particles');
+    if (!container) return;
+    for (let i = 0; i < 12; i++) {
+      const p = document.createElement('div');
+      p.className = 'particle';
+      p.style.cssText = `
+        left:${Math.random()*100}%;
+        animation-duration:${20+Math.random()*30}s;
+        animation-delay:-${Math.random()*30}s;
+        opacity:${0.2+Math.random()*0.4};
+      `;
+      container.appendChild(p);
+    }
+  },
+
+  // ---- HEADER STATS ----
+  updateHeader() {
+    const seen = Object.values(State.progress).filter(p => p.seen).length;
+    const mastered = Object.values(State.progress).filter(p => p.mastered).length;
+    const weak = State.weakWords.size;
+    const exploredPct = Math.round(seen / TOTAL * 100);
+    this.setText('stat-explored', exploredPct + '%');
+    this.setText('stat-mastered', mastered + '/' + TOTAL);
+    this.setText('stat-weak', '⚑' + weak);
+  },
+
+  // ---- HOME ----
+  renderHome() {
+    const greet = document.getElementById('shark-greeting');
+    if (greet) greet.textContent = SHARK_HOME[Math.floor(Math.random() * SHARK_HOME.length)];
+
+    const dayScroll = document.getElementById('day-scroll');
+    if (!dayScroll) return;
+    dayScroll.innerHTML = '';
+    const todayDay = this.getTodayDay();
+    for (let d = 1; d <= 67; d++) {
+      const pill = document.createElement('div');
+      pill.className = 'day-pill';
+      if (d === todayDay) pill.classList.add('today');
+      else if (this.isDayClear(d)) pill.classList.add('clear');
+      else if (this.isDayPartial(d)) pill.classList.add('partial');
+      const status = d === todayDay ? '📍' : this.isDayClear(d) ? '✅' : '○';
+      pill.innerHTML = `<span class="day-num">Day ${d}</span><span class="day-status">${status}</span>`;
+      pill.onclick = () => this.startDaySession(d);
+      dayScroll.appendChild(pill);
+    }
+    const todayEl = dayScroll.children[todayDay - 1];
+    if (todayEl) setTimeout(() => todayEl.scrollIntoView({behavior:'smooth', inline:'center'}), 300);
+
+    const mastered = Object.values(State.progress).filter(p => p.mastered).length;
+    const pct = Math.round(mastered / TOTAL * 100);
+    const bar = document.getElementById('total-progress-bar');
+    const pctEl = document.getElementById('total-progress-pct');
+    if (bar) bar.style.width = pct + '%';
+    if (pctEl) pctEl.textContent = pct + '%';
+  },
+
+  getTodayDay() {
+    try {
+      let firstDate = localStorage.getItem('mvm_start');
+      if (!firstDate) {
+        firstDate = new Date().toDateString();
+        localStorage.setItem('mvm_start', firstDate);
+      }
+      const diff = Math.floor((new Date() - new Date(firstDate)) / 86400000);
+      return Math.min(67, Math.max(1, diff + 1));
+    } catch(e) { return 1; }
+  },
+
+  isDayClear(day) { const s = State.sessions[day]; return s && s.listening; },
+  isDayPartial(day) { const s = State.sessions[day]; return s && (s.fc || s.quiz); },
+
+  // ---- TOPICS ----
+  renderTopics() {
+    const grid = document.getElementById('topic-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    const topics = [...new Set(State.vocab.map(v => v.topic))];
+    topics.forEach(topic => {
+      const words = State.vocab.filter(v => v.topic === topic);
+      const seen = words.filter(w => State.progress[w.word]?.seen).length;
+      const pct = words.length ? Math.round(seen / words.length * 100) : 0;
+      const meta = TOPIC_META[topic] || { emoji: '🌊', color: '#29b6f6' };
+      const card = document.createElement('div');
+      card.className = 'topic-card';
+      card.style.setProperty('--card-accent', meta.color + '33');
+      card.innerHTML = `
+        <div class="topic-emoji">${meta.bgCreature || meta.emoji}</div>
+        <div class="topic-name">${topic}</div>
+        <div class="topic-name-jp">${meta.label || (words[0]?.topicJp || '')}</div>
+        <div class="topic-count">${words.length}語 / 達成${pct}%</div>
+        <div class="topic-mini-bar"><div class="topic-mini-fill" style="width:${pct}%;background:${meta.color}"></div></div>
+      `;
+      card.onclick = () => this.openTopicModal(topic);
+      grid.appendChild(card);
+    });
+  },
+
+  // ---- TOPIC MODE MODAL ----
+  openTopicModal(topic) {
+    this.pendingTopicFull = topic;
+    const meta = TOPIC_META[topic] || { emoji: '🌊', bgCreature: '🌊' };
+    const words = State.vocab.filter(v => v.topic === topic);
+
+    this.setText('modal-topic-name', topic);
+    const creatureEl = document.getElementById('modal-creature');
+    if (creatureEl) creatureEl.textContent = meta.bgCreature || meta.emoji;
+    this.setText('modal-full-count', words.length + '語');
+    this.setText('modal-step-count', SMALL_STEP_SIZE + '語');
+
+    const btn1 = document.getElementById('modal-full-btn');
+    const btn2 = document.getElementById('modal-step-btn');
+    if (btn1) btn1.onclick = () => { this.closeTopicModal(); this.startTopicSession(topic, 'full'); };
+    if (btn2) btn2.onclick = () => { this.closeTopicModal(); this.startTopicSession(topic, 'step'); };
+
+    const modal = document.getElementById('topic-mode-modal');
+    if (modal) modal.style.display = 'flex';
+  },
+
+  closeTopicModal() {
+    const modal = document.getElementById('topic-mode-modal');
+    if (modal) modal.style.display = 'none';
+  },
+
+  // ---- REVIEW ----
+  renderReview() {
+    const weakCount = document.getElementById('weak-count');
+    if (weakCount) weakCount.textContent = State.weakWords.size + '語';
+    const list = document.getElementById('topic-review-list');
+    if (!list) return;
+    list.innerHTML = '';
+    const topics = [...new Set(State.vocab.map(v => v.topic))];
+    topics.forEach(topic => {
+      const words = State.vocab.filter(v => v.topic === topic);
+      const meta = TOPIC_META[topic] || { emoji: '🌊' };
+      const btn = document.createElement('button');
+      btn.className = 'review-btn';
+      btn.innerHTML = `
+        <span class="r-icon">${meta.bgCreature || meta.emoji}</span>
+        <span class="r-label">${topic}</span>
+        <span class="r-count">${words.length}語</span>
+      `;
+      btn.onclick = () => this.openTopicModal(topic);
+      list.appendChild(btn);
+    });
+  },
+
+  // ---- SESSIONS ----
+  startTodaySession() {
+    const day = this.getTodayDay();
+    this.startDaySession(day);
+  },
+
+  startDaySession(day) {
+    const words = State.vocab.filter(v => v.day === day);
+    if (!words.length) { this.showShark("今日の単語が見つかりません。"); return; }
+    this.sessionSource = 'day';
+    this.sessionDay = day;
+    this.sessionWords = this.shuffleArr([...words]);
+    this.sessionTopic = words[0]?.topic || null;
+    this.sessionCorrect = 0;
+    this.updateBackground(this.sessionTopic);
+    this.startPhase('flashcard');
+  },
+
+  startTopicSession(topic, mode) {
+    // mode: 'full' | 'step'
+    const allWords = State.vocab.filter(v => v.topic === topic);
+    let words;
+
+    if (mode === 'step') {
+      // Find unseen words first, then seen-but-not-mastered, then mastered
+      const unseen = allWords.filter(w => !State.progress[w.word]?.seen);
+      const seen = allWords.filter(w => State.progress[w.word]?.seen && !State.progress[w.word]?.mastered);
+      const mastered = allWords.filter(w => State.progress[w.word]?.mastered);
+      const pool = [...this.shuffleArr(unseen), ...this.shuffleArr(seen), ...this.shuffleArr(mastered)];
+      words = pool.slice(0, SMALL_STEP_SIZE);
+    } else {
+      words = this.shuffleArr([...allWords]);
+    }
+
+    this.sessionSource = mode === 'step' ? 'topic-step' : 'topic';
+    this.sessionTopic = topic;
+    this.sessionWords = words;
+    this.sessionCorrect = 0;
+    this.updateBackground(topic);
+    this.startPhase('flashcard');
+  },
+
+  startReview(mode) {
+    let words = [];
+    if (mode === 'weak') {
+      words = State.vocab.filter(v => State.weakWords.has(v.word));
+      if (!words.length) { this.showShark("Weak Wordsがありません！素晴らしい！🎉"); return; }
+    } else if (mode === 'random') {
+      words = this.shuffleArr([...State.vocab]);
+    }
+    this.sessionSource = mode;
+    this.sessionWords = this.shuffleArr(words);
+    this.sessionCorrect = 0;
+    this.updateBackground(null);
+    this.startPhase('quiz');
+  },
+
+  startPhase(phase) {
+    this.sessionMode = phase;
+    this.sessionIndex = 0;
+
+    if (phase === 'flashcard') {
+      this.setupFlashcard();
+      this.showScreen('screen-flashcard');
+    } else if (phase === 'quiz') {
+      this.sessionCorrect = 0; // クイズフェーズ開始時にリセット
+      this.setupQuiz();
+      this.showScreen('screen-quiz');
+    } else if (phase === 'listening') {
+      this.sessionMode = 'listening';
+      this.sessionCorrect = 0;
+      // リスニングへの切替後150ms余分に待機（音声初期化待ち）
+      setTimeout(() => {
+        this.setupQuiz();
+        this.showScreen('screen-quiz');
+      }, 150);
+    }
+  },
+
+  // ---- FLASHCARD ----
+  setupFlashcard() {
+    const backBtn = document.getElementById('fc-back-btn');
+    if (backBtn) backBtn.onclick = () => { this.clearQuizTimer(); this.showScreen('screen-home'); };
+    this.renderFlashcard();
+  },
+
+  renderFlashcard() {
+    const w = this.sessionWords[this.sessionIndex];
+    if (!w) { this.advancePhase(); return; }
+
+    if (!State.progress[w.word]) State.progress[w.word] = { seen: false, correct: 0, wrong: 0, mastered: false };
+    State.progress[w.word].seen = true;
+    saveState();
+    this.updateHeader();
+
+    const fc = document.getElementById('flashcard');
+    if (fc) fc.classList.remove('flipped');
+    this.fcFlipped = false;
+
+    this.setText('card-pos', w.pos);
+    this.setText('card-word', w.word);
+    this.setText('card-meaning', w.meaning);
+    this.setText('card-example', '📖 ' + w.example);
+    this.setText('card-translation', '　' + w.translation);
+    this.setText('card-etymology', w.etymology ? '🔤 ' + w.etymology : '');
+    const deriv = w.derivatives && w.derivatives.length ? '🔗 ' + w.derivatives.join('  /  ') : '';
+    this.setText('card-derivatives', deriv);
+    this.setText('fc-progress', `${this.sessionIndex + 1} / ${this.sessionWords.length}`);
+    this.setText('fc-topic-label', w.topic);
+  },
+
+  flipCard() {
+    const fc = document.getElementById('flashcard');
+    if (!fc) return;
+    this.fcFlipped = !this.fcFlipped;
+    fc.classList.toggle('flipped', this.fcFlipped);
+  },
+
+  fcNext() {
+    if (this.sessionIndex < this.sessionWords.length - 1) {
+      this.sessionIndex++;
+      this.renderFlashcard();
+    } else {
+      this.advancePhase();
+    }
+  },
+
+  fcPrev() {
+    if (this.sessionIndex > 0) {
+      this.sessionIndex--;
+      this.renderFlashcard();
+    }
+  },
+
+  fcKnew() {
+    const w = this.sessionWords[this.sessionIndex];
+    if (w) {
+      if (!State.progress[w.word]) State.progress[w.word] = { seen: true, correct: 0, wrong: 0, mastered: false };
+      State.progress[w.word].correct++;
+      State.weakWords.delete(w.word);
+      saveState();
+    }
+    this.fcNext();
+  },
+
+  fcSkip() { this.fcNext(); },
+
+  // ---- PHASE ADVANCEMENT ----
+  advancePhase() {
+    if (this.sessionMode === 'flashcard') {
+      // FC完了を記録（dayセッションのみ）
+      if (this.sessionSource === 'day' && this.sessionDay) {
+        if (!State.sessions[this.sessionDay]) State.sessions[this.sessionDay] = {};
+        State.sessions[this.sessionDay].fc = true;
+        saveState();
+      }
+      this.sessionWords = this.shuffleArr([...this.sessionWords]); // クイズ用に再シャッフル
+      this.sessionIndex = 0;
+      this.startPhase('quiz');
+
+    } else if (this.sessionMode === 'quiz') {
+      // Quiz完了を記録（dayセッションのみ）
+      if (this.sessionSource === 'day' && this.sessionDay) {
+        if (!State.sessions[this.sessionDay]) State.sessions[this.sessionDay] = {};
+        State.sessions[this.sessionDay].quiz = true;
+        saveState();
+      }
+      // topic系はクイズで終了、dayセッションのみlisteningへ
+      if (this.sessionSource === 'day') {
+        this.sessionWords = this.shuffleArr([...this.sessionWords]); // リスニング用に再シャッフル
+        this.sessionIndex = 0;
+        this.startPhase('listening');
       } else {
-        clearInterval(_kaTimer);
+        this.showResults();
       }
-    }, 10000);
-  }, 80);
-}
 
-function stopSpeak() {
-  speechSynthesis.cancel();
-  clearTimeout(_spkTimer);
-  clearInterval(_kaTimer);
-  _isSpeaking = false;
-  updSpeakUI(false);
-}
+    } else {
+      // Listening完了（dayセッションのみここに到達）
+      if (this.sessionSource === 'day' && this.sessionDay) {
+        if (!State.sessions[this.sessionDay]) State.sessions[this.sessionDay] = {};
+        State.sessions[this.sessionDay].listening = true;
+        saveState();
+      }
+      this.showResults();
+    }
+  },
 
-function updSpeakUI(on) {
-  document.querySelectorAll('.speak-btn, .speak-big, .q-speak-btn').forEach(b => {
-    b.classList.toggle('speaking', on);
-    b.classList.toggle('active', on);
-  });
-  const w = document.getElementById('wave');
-  if (w) w.className = 'wave' + (on ? ' on' : '');
-}
+  // ---- QUIZ ----
+  setupQuiz() {
+    const backBtn = document.getElementById('quiz-back-btn');
+    if (backBtn) backBtn.onclick = () => { this.clearQuizTimer(); this.showScreen('screen-home'); };
+    const modeLabel = document.getElementById('quiz-mode-label');
+    if (modeLabel) modeLabel.textContent = this.sessionMode === 'listening' ? '🔊 Listening' : '英→日';
+    const listenBtn = document.getElementById('quiz-listen-btn');
+    if (listenBtn) listenBtn.style.display = this.sessionMode === 'listening' ? 'flex' : 'none';
+    this.renderQuiz();
+  },
 
-// タブ非表示（切り替え）時に自動停止
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopSpeak();
-});
+  renderQuiz() {
+    this.clearQuizTimer();
+    if (this.advanceTimer) { clearTimeout(this.advanceTimer); this.advanceTimer = null; }
+    const feedback = document.getElementById('quiz-feedback');
+    if (feedback) feedback.style.display = 'none';
 
-// =====================================================
-// UTILS
-// =====================================================
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
+    const w = this.sessionWords[this.sessionIndex];
+    if (!w) { this.advancePhase(); return; }
+    this.quizCurrentWord = w;
+    this.quizAnswered = false;
 
-function getAllWords() {
-  return State.vocab ? State.vocab.topics.flatMap(t => t.words) : [];
-}
+    this.setText('quiz-word', this.sessionMode === 'listening' ? '🔊 ??　??' : w.word);
+    this.setText('quiz-progress', `${this.sessionIndex + 1}/${this.sessionWords.length}`);
 
-function getTopicWords(topicId) {
-  const t = State.vocab?.topics.find(t => t.id === topicId);
-  return t ? t.words : [];
-}
+    const correct = w.meaning;
+    const distractors = this.getDistractors(w, 3);
+    const all = this.shuffleArr([correct, ...distractors]);
+    this.quizChoices = all;
 
-function getWeakWords() {
-  return getAllWords().filter(w => State.progress[w.id] === 'weak');
-}
+    const choicesEl = document.getElementById('quiz-choices');
+    if (!choicesEl) return;
+    choicesEl.innerHTML = '';
+    all.forEach((choice, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'choice-btn';
+      btn.innerHTML = `<span class="choice-num">${i+1}</span><span>${choice}</span>`;
+      btn.onclick = () => this.selectChoice(choice, btn);
+      choicesEl.appendChild(btn);
+    });
 
-function getMasteredCount(topicId) {
-  const words = topicId ? getTopicWords(topicId) : getAllWords();
-  return words.filter(w => State.progress[w.id] === 'known').length;
-}
+    this.quizTimerLeft = 10;
+    this.updateTimerUI(10);
+    this.quizTimer = setInterval(() => {
+      this.quizTimerLeft--;
+      this.updateTimerUI(this.quizTimerLeft);
+      if (this.quizTimerLeft <= 0) {
+        this.clearQuizTimer();
+        if (!this.quizAnswered) this.selectChoice(null, null);
+      }
+    }, 1000);
 
-function getTopicOfWord(wordId) {
-  return State.vocab?.topics.find(t => t.words.some(w => w.id === wordId)) || null;
-}
+    // リスニングモード: 全問ここで音声再生
+    if (this.sessionMode === 'listening') {
+      setTimeout(() => this.speak(w.word), 300);
+    }
+  },
 
-function updateStreak() {
-  const today = new Date().toDateString();
-  if (State.lastStudyDate !== today) {
-    const yesterday = new Date(Date.now() - 86400000).toDateString();
-    State.streak = (State.lastStudyDate === yesterday) ? State.streak + 1 : 1;
-    State.lastStudyDate = today;
-  }
-}
+  updateTimerUI(t) {
+    const bar = document.getElementById('quiz-timer-bar');
+    const text = document.getElementById('quiz-timer-text');
+    if (bar) bar.style.setProperty('--timer-pct', (t / 10 * 100) + '%');
+    if (text) text.textContent = t;
+  },
 
-// =====================================================
-// HEADER / PROGRESS UPDATE
-// =====================================================
-function updateHeader() {
-  if (!State.vocab) return;
-  const total    = State.vocab.total;
-  const mastered = getMasteredCount();
-  const pct      = Math.round(mastered / total * 100);
+  clearQuizTimer() {
+    if (this.quizTimer) { clearInterval(this.quizTimer); this.quizTimer = null; }
+  },
 
-  document.getElementById('hd-pct').textContent    = pct + '% | ' + mastered + '/' + total;
-  document.getElementById('hd-streak').textContent = '⚑' + State.streak;
-  document.getElementById('pb-fill').style.width   = pct + '%';
-  document.getElementById('pb-l').textContent      = pct + '%';
-  document.getElementById('pb-r').textContent      = mastered + ' / ' + total;
-}
+  selectChoice(choice, btn) {
+    if (this.quizAnswered) return;
+    this.quizAnswered = true;
+    this.clearQuizTimer();
+    const w = this.quizCurrentWord;
+    const correct = w.meaning;
+    const isCorrect = choice === correct;
 
-// =====================================================
-// SCREEN NAVIGATION
-// =====================================================
-function showScreen(id) {
-  stopSpeak(); // ← 画面遷移時は必ず停止
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.getElementById('scr-' + id)?.classList.add('active');
-  updateHeader();
-}
+    if (!State.progress[w.word]) State.progress[w.word] = { seen: true, correct: 0, wrong: 0, mastered: false };
+    if (isCorrect) {
+      State.progress[w.word].correct++;
+      State.weakWords.delete(w.word);
+      if (State.progress[w.word].correct >= 3) State.progress[w.word].mastered = true;
+      this.sessionCorrect++;
+      this.playCorrectEffect(w.topic);
+    } else {
+      State.progress[w.word].wrong++;
+      State.weakWords.add(w.word);
+    }
+    saveState();
+    this.updateHeader();
 
-// =====================================================
-// HOME
-// =====================================================
-function goHome() {
-  stopSpeak();
-  showScreen('home');
-}
+    if (this.sessionMode === 'listening') {
+      const qw = document.getElementById('quiz-word');
+      if (qw) qw.textContent = w.word;
+    }
 
-// =====================================================
-// TOPICS SCREEN
-// =====================================================
-function renderTopics() {
-  const container = document.getElementById('topic-list');
-  container.innerHTML = '';
-  State.vocab.topics.forEach(topic => {
-    const total = topic.count;
-    const done  = getMasteredCount(topic.id);
-    const pct   = Math.round(done / total * 100);
-    const card  = document.createElement('div');
-    card.className = 'topic-card';
-    card.innerHTML = `
-      <div class="t-icon">${topic.icon}</div>
-      <div class="t-info">
-        <div class="t-name">${topic.name}</div>
-        <div class="t-theme">${topic.theme}</div>
-        <div class="t-meta">
-          <span class="t-count">${total}語</span>
-          <span class="t-prog">${pct}% 習得</span>
-        </div>
-        <div class="t-bar"><div class="t-bar-fill" style="width:${pct}%"></div></div>
-      </div>
-    `;
-    card.addEventListener('click', () => openModal(topic));
-    container.appendChild(card);
-  });
-}
+    document.querySelectorAll('.choice-btn').forEach(b => {
+      b.classList.add('disabled');
+      const txt = b.querySelector('span:last-child')?.textContent;
+      if (txt === correct) b.classList.add('correct');
+      else if (b === btn) b.classList.add('wrong');
+    });
 
-function openModal(topic) {
-  State.currentTopic = topic;
-  document.getElementById('modal-title').textContent    = topic.icon + ' ' + topic.name;
-  document.getElementById('modal-sub').textContent      = topic.theme;
-  document.getElementById('mode-full-count').textContent = topic.count + '語';
-  document.getElementById('mode-modal').classList.remove('hidden');
-}
+    // Feedback panel
+    const feedback = document.getElementById('quiz-feedback');
+    const icon = document.getElementById('feedback-icon');
+    const msg = document.getElementById('feedback-msg');
+    const correctEl = document.getElementById('feedback-correct');
+    const hintEl = document.getElementById('feedback-hint');
+    const etymEl = document.getElementById('hint-etymology');
+    const derivEl = document.getElementById('hint-derivatives');
+    const exEl = document.getElementById('hint-example');
 
-function closeModal() {
-  document.getElementById('mode-modal').classList.add('hidden');
-}
+    if (feedback) feedback.style.display = 'block';
+    if (icon) icon.textContent = isCorrect ? '🎉' : '😅';
+    if (msg) msg.textContent = isCorrect
+      ? SHARK_CORRECT[Math.floor(Math.random() * SHARK_CORRECT.length)]
+      : SHARK_WRONG[Math.floor(Math.random() * SHARK_WRONG.length)];
 
-function startMode(mode) {
-  closeModal();
-  State.currentMode = mode;
-  const words = getTopicWords(State.currentTopic.id);
-  if      (mode === 'full')   startFlash(words);
-  else if (mode === 'small')  startFlash(shuffle(words).slice(0, 10));
-  else if (mode === 'quiz')   startQuiz(words);
-  else if (mode === 'listen') startListen(words);
-}
+    if (correctEl) correctEl.textContent = isCorrect ? '' : `正解: ${correct}`;
 
-// =====================================================
-// REVIEW SCREEN
-// =====================================================
-function renderReview() {
-  const weak    = getWeakWords();
-  const total   = getAllWords().length;
-  const weakBtn = document.getElementById('btn-weak');
-  const emptyEl = document.getElementById('weak-empty');
+    // Memory hint for wrong answers
+    if (!isCorrect && hintEl && etymEl && derivEl && exEl) {
+      hintEl.style.display = 'block';
+      // Etymology
+      if (w.etymology) {
+        etymEl.textContent = '🔤 語源ヒント: ' + w.etymology.split('；')[0];
+        etymEl.style.display = 'block';
+      } else {
+        etymEl.style.display = 'none';
+      }
+      // Derivatives
+      if (w.derivatives && w.derivatives.length) {
+        derivEl.textContent = '🔗 関連語: ' + w.derivatives.slice(0,3).join('  /  ');
+        derivEl.style.display = 'block';
+      } else {
+        derivEl.style.display = 'none';
+      }
+      // Example sentence (short)
+      if (w.example) {
+        const ex = w.example.length > 75 ? w.example.slice(0,75) + '…' : w.example;
+        exEl.textContent = '📖 ' + ex;
+        exEl.style.display = 'block';
+      } else {
+        exEl.style.display = 'none';
+      }
+    } else if (hintEl) {
+      hintEl.style.display = 'none';
+    }
 
-  document.getElementById('weak-count').textContent   = weak.length + '語';
-  document.getElementById('r-total-count').textContent = total + '語から';
+    // Auto advance after longer delay if wrong (to read hint)
+    this.advanceTimer = setTimeout(() => this.nextQuiz(), isCorrect ? 2000 : 3500);
+  },
 
-  if (weak.length === 0) {
-    weakBtn.style.opacity        = '.4';
-    weakBtn.style.pointerEvents  = 'none';
-    emptyEl.style.display        = 'block';
-  } else {
-    weakBtn.style.opacity        = '1';
-    weakBtn.style.pointerEvents  = 'auto';
-    emptyEl.style.display        = 'none';
-  }
-}
+  nextQuiz() {
+    // 二重呼び出し防止
+    if (this.advanceTimer) { clearTimeout(this.advanceTimer); this.advanceTimer = null; }
+    if (this.sessionIndex < this.sessionWords.length - 1) {
+      this.sessionIndex++;
+      this.renderQuiz();
+    } else {
+      this.advancePhase();
+    }
+  },
 
-function startWeakReview() {
-  const words = getWeakWords();
-  if (!words.length) return;
-  State.currentTopic = { id: '_weak', name: 'Weak Words', icon: '⚑', count: words.length };
-  State.currentMode  = 'full';
-  startFlash(shuffle(words));
-}
+  getDistractors(word, count) {
+    let pool = State.vocab.filter(v =>
+      v.word !== word.word &&
+      v.meaning !== word.meaning &&
+      !this.meaningsAreSimilar(v.meaning, word.meaning)
+    );
+    pool = this.shuffleArr(pool);
+    return pool.slice(0, count).map(v => v.meaning);
+  },
 
-function startRandomReview() {
-  const all = getAllWords();
-  State.currentTopic = { id: '_all', name: '総復習', icon: '🎲', count: all.length };
-  State.currentMode  = 'full';
-  startFlash(shuffle(all));
-}
+  meaningsAreSimilar(a, b) {
+    const ka = a.replace(/[；・]/g, '').slice(0, 4);
+    const kb = b.replace(/[；・]/g, '').slice(0, 4);
+    return ka === kb;
+  },
 
-// =====================================================
-// FLASHCARD
-// =====================================================
-const CH_ACCENTS = {
-  ch1:'#1F4E79', ch2:'#375623', ch3:'#7B6000',
-  ch4:'#783F04', ch5:'#4A1B7D', ch6:'#434343'
+  playCurrentWord() {
+    if (this.quizCurrentWord) this.speak(this.quizCurrentWord.word);
+  },
+
+  _spkTimer: null,
+  _kaTimer: null,
+
+  speak(text) {
+    if (!text || !window.speechSynthesis) return;
+    // ① 前の発話を確実にキャンセル
+    window.speechSynthesis.cancel();
+    clearTimeout(this._spkTimer);
+    clearInterval(this._kaTimer);
+    // ② 80ms待機後に発話（Chromiumバグ対策）
+    this._spkTimer = setTimeout(() => {
+      try {
+        const utt = new SpeechSynthesisUtterance(text);
+        utt.lang = 'en-US'; utt.rate = 0.85; utt.pitch = 1; utt.volume = 1;
+        utt.onend = () => clearInterval(this._kaTimer);
+        utt.onerror = (e) => { if (e.error !== 'interrupted') clearInterval(this._kaTimer); };
+        window.speechSynthesis.speak(utt);
+        // ③ Chrome 14秒バグ対策
+        this._kaTimer = setInterval(() => {
+          if (window.speechSynthesis.speaking) {
+            window.speechSynthesis.pause();
+            window.speechSynthesis.resume();
+          } else { clearInterval(this._kaTimer); }
+        }, 10000);
+      } catch(e) {}
+    }, 80);
+  },
+
+  stopSpeak() {
+    window.speechSynthesis.cancel();
+    clearTimeout(this._spkTimer);
+    clearInterval(this._kaTimer);
+  },
+
+  // ---- CORRECT EFFECT (new!) ----
+  playCorrectEffect(topic) {
+    // 1. Burst emoji overlay
+    const burst = document.getElementById('correct-burst');
+    const content = document.getElementById('burst-content');
+    if (burst && content) {
+      const burstEmojis = BURST_CORRECT[topic] || ['✨','⭐','💫','🌟'];
+      content.textContent = burstEmojis[Math.floor(Math.random() * burstEmojis.length)];
+      burst.style.display = 'flex';
+      setTimeout(() => { burst.style.display = 'none'; }, 650);
+    }
+
+    // 2. Marine confetti instead of plain sparks
+    this.playMarineConfetti(topic);
+
+    // 3. Sound chime
+    this.playChime();
+  },
+
+  playMarineConfetti(topic) {
+    const container = document.getElementById('celebration');
+    if (!container) return;
+    const meta = TOPIC_META[topic];
+    const emojis = meta ? meta.creatures : ['🐠','🌊','⭐','🐟','✨'];
+    const colors = ['#ffd54f','#29b6f6','#4dd0e1','#ff6b6b','#81c784','#ce93d8'];
+
+    // Colored sparks
+    for (let i = 0; i < 16; i++) {
+      const spark = document.createElement('div');
+      spark.className = 'spark';
+      const x = 20 + Math.random() * 60;
+      const dy = -(80 + Math.random() * 220);
+      const dx = -100 + Math.random() * 200;
+      spark.style.cssText = `
+        left:${x}%; top:55%;
+        background:${colors[Math.floor(Math.random()*colors.length)]};
+        --dx:${dx}px; --dy:${dy}px;
+        animation-duration:${0.7 + Math.random()*0.6}s;
+        animation-delay:${Math.random()*0.2}s;
+        width:${4+Math.random()*8}px; height:${4+Math.random()*8}px;
+        border-radius:${Math.random()>0.5?'50%':'2px'};
+      `;
+      container.appendChild(spark);
+      spark.addEventListener('animationend', () => spark.remove());
+    }
+
+    // Fish/creature emojis floating up
+    for (let i = 0; i < 6; i++) {
+      const fish = document.createElement('div');
+      fish.className = 'fish-confetti';
+      fish.textContent = emojis[Math.floor(Math.random() * emojis.length)];
+      const x = 10 + Math.random() * 80;
+      const dy = -(120 + Math.random() * 200);
+      const dx = -60 + Math.random() * 120;
+      const dr = -180 + Math.random() * 360;
+      fish.style.cssText = `
+        left:${x}%; top:60%;
+        --dx:${dx}px; --dy:${dy}px; --dr:${dr}deg;
+        animation-duration:${1.0 + Math.random()*0.6}s;
+        animation-delay:${Math.random()*0.3}s;
+        font-size:${18+Math.random()*14}px;
+      `;
+      container.appendChild(fish);
+      fish.addEventListener('animationend', () => fish.remove());
+    }
+  },
+
+  playChime() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const notes = [523, 659, 784, 1047];
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.12, ctx.currentTime + i*0.08);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i*0.08 + 0.35);
+        osc.start(ctx.currentTime + i*0.08);
+        osc.stop(ctx.currentTime + i*0.08 + 0.4);
+      });
+    } catch(e) {}
+  },
+
+  // ---- RESULTS ----
+  showResults() {
+    const total = this.sessionWords.length;
+    const correct = this.sessionCorrect;
+    const pct = total ? Math.round(correct / total * 100) : 0;
+
+    this.setText('results-score', `${correct} / ${total}`);
+    this.setText('results-title', pct >= 80 ? 'Excellent Dive! 🌊' : pct >= 50 ? 'Good Progress!' : 'Keep Swimming!');
+
+    const comments = pct >= 90 ? "Perfect! You're a vocabulary shark! 🦈"
+      : pct >= 70 ? "Great work! The ocean is yours! 🌊"
+      : pct >= 50 ? "Keep diving deeper! 💪"
+      : "Every mistake makes you stronger! 🦈";
+    this.setText('results-comment', comments);
+
+    // フェーズ名ラベル
+    const phaseLabel = this.sessionMode === 'listening' ? 'リスニング'
+      : this.sessionMode === 'quiz' ? 'クイズ' : '';
+
+    const statsEl = document.getElementById('results-stats');
+    if (statsEl) {
+      const mastered = Object.values(State.progress).filter(p => p.mastered).length;
+      const weak = State.weakWords.size;
+      statsEl.innerHTML = `
+        <div class="r-stat"><div class="r-stat-num">${pct}%</div><div class="r-stat-label">${phaseLabel}正答率</div></div>
+        <div class="r-stat"><div class="r-stat-num">${correct}/${total}</div><div class="r-stat-label">${phaseLabel}正解数</div></div>
+        <div class="r-stat"><div class="r-stat-num">${mastered}</div><div class="r-stat-label">習得済み</div></div>
+        <div class="r-stat"><div class="r-stat-num">${weak}</div><div class="r-stat-label">Weak Words</div></div>
+      `;
+    }
+
+    if (pct >= 80) this.playMarineConfetti(this.sessionTopic);
+    this.renderHome();
+    this.renderTopics();
+    this.renderReview();
+    this.showScreen('screen-results');
+  },
+
+  goHome() { this.showScreen('screen-home'); },
+
+  retryWeak() {
+    if (!State.weakWords.size) { this.showShark("Weak Wordsがありません！ 🎉"); return; }
+    this.showScreen('screen-review');
+    this.startReview('weak');
+  },
+
+  // ---- SHARK OVERLAY ----
+  showShark(msg) {
+    const overlay = document.getElementById('shark-overlay');
+    const msgEl = document.getElementById('shark-overlay-msg');
+    if (!overlay || !msgEl) return;
+    msgEl.textContent = msg;
+    overlay.style.display = 'flex';
+  },
+
+  closeShark() {
+    const overlay = document.getElementById('shark-overlay');
+    if (overlay) overlay.style.display = 'none';
+  },
+
+  // ---- UTILITIES ----
+  shuffleArr(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  },
+
+  setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text || '';
+  },
 };
 
-function startFlash(words) {
-  State.studyQueue   = words;
-  State.studyIdx     = 0;
-  State.studyFlipped = false;
-  showScreen('flash');
-  renderFlash();
-}
-
-function renderFlash() {
-  if (State.studyIdx >= State.studyQueue.length) { showResult(); return; }
-
-  const w     = State.studyQueue[State.studyIdx];
-  const total = State.studyQueue.length;
-  const pct   = Math.round(State.studyIdx / total * 100);
-  const t     = getTopicOfWord(w.id);
-  const color = CH_ACCENTS[t?.id] || '#1F4E79';
-
-  // ヘッダー進捗
-  document.getElementById('flash-prog-txt').textContent      = (State.studyIdx + 1) + ' / ' + total;
-  document.getElementById('flash-mini-fill').style.width     = pct + '%';
-
-  // カードのアクセントカラー
-  document.getElementById('flash-card').style.setProperty('--card-accent', color);
-
-  // 表面
-  State.studyFlipped = false;
-  document.getElementById('fc-label').textContent            = '英語';
-  document.getElementById('fc-word').textContent             = w.word;
-  document.getElementById('fc-pos').textContent              = w.pos;
-  document.getElementById('fc-freq').style.display           = w.freq === 2 ? 'inline-block' : 'none';
-  document.getElementById('fc-univ').textContent             = w.univ ? '📍 ' + w.univ.replace(/\//g, ' / ') : '';
-  document.getElementById('fc-univ').style.display           = w.univ ? 'block' : 'none';
-  document.getElementById('fc-hint').textContent             = 'タップで意味を見る 👆';
-
-  // 裏面（非表示）
-  document.getElementById('fc-meaning').textContent          = w.meaning;
-  document.getElementById('fc-etym').textContent             = w.etymology ? '💡 ' + w.etymology : '';
-  document.getElementById('fc-etym').style.display           = w.etymology ? 'block' : 'none';
-  document.getElementById('fc-deriv').textContent            = w.derivatives ? '▶ 派生語：' + w.derivatives : '';
-  document.getElementById('fc-deriv').style.display          = w.derivatives ? 'block' : 'none';
-  document.getElementById('fc-ex').textContent               = w.example || '';
-  document.getElementById('fc-ex-ja').textContent            = w.example_ja || '';
-
-  const back = document.getElementById('fc-back');
-  back.classList.remove('show');
-
-  // 評価ボタンはめくるまで無効
-  const rateRow = document.getElementById('rate-row');
-  rateRow.style.opacity       = '.35';
-  rateRow.style.pointerEvents = 'none';
-}
-
-function flipCard() {
-  State.studyFlipped = !State.studyFlipped;
-  const back     = document.getElementById('fc-back');
-  const rateRow  = document.getElementById('rate-row');
-  const hint     = document.getElementById('fc-hint');
-
-  back.classList.toggle('show', State.studyFlipped);
-  hint.textContent = '';
-  rateRow.style.opacity       = State.studyFlipped ? '1'    : '.35';
-  rateRow.style.pointerEvents = State.studyFlipped ? 'auto' : 'none';
-
-  // めくったら自動発音
-  if (State.studyFlipped) {
-    speak(State.studyQueue[State.studyIdx]?.word);
-  }
-}
-
-function speakCurrentCard() {
-  // トグル動作：再生中なら停止、停止中なら再生
-  if (_isSpeaking) { stopSpeak(); return; }
-  const w = State.studyQueue[State.studyIdx];
-  if (w) speak(w.word);
-}
-
-function rateWord(rating) {
-  const w = State.studyQueue[State.studyIdx];
-  if (w) State.progress[w.id] = (rating === 'knew') ? 'known' : 'weak';
-  if (rating === 'knew') { updateStreak(); spawnConfetti(3); }
-  save(); updateHeader();
-  State.studyIdx++;
-  State.studyFlipped = false;
-  renderFlash();
-}
-
-// =====================================================
-// QUIZ
-// =====================================================
-function startQuiz(words) {
-  stopSpeak(); // モード切替時に必ず停止
-  State.quizQueue    = shuffle(words).slice(0, 20);
-  State.quizIdx      = 0;
-  State.quizScore    = 0;
-  State.quizAnswered = false;
-  showScreen('quiz');
-  renderQuiz();
-}
-
-function renderQuiz() {
-  if (State.quizIdx >= State.quizQueue.length) { showResult(); return; }
-
-  const w     = State.quizQueue[State.quizIdx];
-  const total = State.quizQueue.length;
-  const pct   = Math.round(State.quizIdx / total * 100);
-  const t     = getTopicOfWord(w.id);
-
-  document.getElementById('quiz-num').textContent       = (State.quizIdx + 1) + '/' + total + ' 英→日';
-  document.getElementById('quiz-score-live').textContent = State.quizScore + '点';
-  document.getElementById('quiz-q-fill').style.width    = pct + '%';
-  document.getElementById('q-word').textContent         = w.word;
-  document.getElementById('q-pos').textContent          = w.pos;
-  document.getElementById('q-freq').style.display       = w.freq === 2 ? 'inline-block' : 'none';
-  document.getElementById('q-ch').textContent           = t ? t.id.toUpperCase() + ' — ' + t.name : '';
-
-  // 選択肢（同トピックから3つの誤答）
-  const sameTopicWords = (t ? t.words : getAllWords()).filter(x => x.id !== w.id);
-  const wrongs  = shuffle(sameTopicWords.length >= 3 ? sameTopicWords : getAllWords().filter(x => x.id !== w.id)).slice(0, 3);
-  const choices = shuffle([w, ...wrongs]);
-
-  const grid = document.getElementById('choices-grid');
-  grid.innerHTML = '';
-  choices.forEach(c => {
-    const btn = document.createElement('button');
-    btn.className   = 'choice-btn';
-    btn.textContent = c.meaning;
-    btn.addEventListener('click', () => answerQuiz(btn, c.id === w.id, w));
-    grid.appendChild(btn);
-  });
-
-  document.getElementById('quiz-feedback').style.display  = 'none';
-  document.getElementById('quiz-next-wrap').style.display = 'none';
-  State.quizAnswered = false;
-}
-
-function answerQuiz(clickedBtn, isCorrect, word) {
-  if (State.quizAnswered) return;
-  State.quizAnswered = true;
-
-  // 選択肢の色付け
-  const grid = document.getElementById('choices-grid');
-  grid.querySelectorAll('.choice-btn').forEach(btn => {
-    btn.disabled = true;
-    if (btn.textContent === word.meaning) {
-      btn.classList.add('correct'); // 正解は緑
-    } else if (btn === clickedBtn && !isCorrect) {
-      btn.classList.add('wrong');   // 選んだ不正解は赤
-    }
-  });
-
-  if (isCorrect) {
-    State.quizScore++;
-    if (!State.progress[word.id]) State.progress[word.id] = 'known';
-    spawnConfetti(2);
-  } else {
-    State.progress[word.id] = 'weak';
-  }
-  save(); updateHeader();
-
-  // フィードバック表示
-  const fb = document.getElementById('quiz-feedback');
-  fb.style.display = 'block';
-  fb.innerHTML = (isCorrect
-    ? '<strong style="color:#43A047">✓ 正解！</strong>'
-    : '<strong style="color:#E63946">✗ 不正解</strong>')
-    + ' &nbsp;— <strong>' + word.word + '</strong> = ' + word.meaning
-    + (word.etymology ? '<br><span style="font-size:12px;color:#718096">💡 ' + word.etymology + '</span>' : '');
-
-  document.getElementById('quiz-next-wrap').style.display = 'block';
-
-  // 正解音声を再生
-  speak(word.word);
-}
-
-function speakQuizWord() {
-  if (_isSpeaking) { stopSpeak(); return; }
-  const w = State.quizQueue[State.quizIdx];
-  if (w) speak(w.word);
-}
-
-function nextQuiz() {
-  stopSpeak(); // ← 次へ移動前に必ず停止
-  State.quizIdx++;
-  State.quizAnswered = false;
-  renderQuiz();
-}
-
-// =====================================================
-// LISTEN — 最も音声トラブルが起きやすいモード
-// =====================================================
-function startListen(words) {
-  stopSpeak(); // ← モード切替時に必ず停止
-
-  State.listenQueue    = shuffle(words);
-  State.listenIdx      = 0;
-  State.listenRevealed = false;
-
-  showScreen('listen');
-
-  // リスニングモードへの切り替え後は 150ms 余分に待機してから描画
-  // （SpeechSynthesis の初期化を待つ）
-  setTimeout(renderListen, 150);
-}
-
-function renderListen() {
-  if (State.listenIdx >= State.listenQueue.length) { showResult(); return; }
-
-  const w     = State.listenQueue[State.listenIdx];
-  const total = State.listenQueue.length;
-  const pct   = Math.round(State.listenIdx / total * 100);
-
-  document.getElementById('listen-prog-txt').textContent    = (State.listenIdx + 1) + ' / ' + total;
-  document.getElementById('listen-mini-fill').style.width   = pct + '%';
-  document.getElementById('listen-status').textContent      = State.listenRevealed
-    ? '発音を確認する' : '音声を聞いて語を当てよう';
-
-  const revealArea = document.getElementById('listen-reveal-area');
-  const revealBtn  = document.getElementById('listen-reveal-btn');
-  const rateRow    = document.getElementById('listen-rate-row');
-
-  if (State.listenRevealed) {
-    revealArea.style.display = 'block';
-    revealBtn.style.display  = 'none';
-    rateRow.style.display    = 'flex';
-
-    document.getElementById('listen-word').textContent    = w.word;
-    document.getElementById('listen-meaning').textContent = w.meaning;
-    const etymEl = document.getElementById('listen-etym');
-    etymEl.textContent  = w.etymology || '';
-    etymEl.style.display = w.etymology ? 'block' : 'none';
-  } else {
-    revealArea.style.display = 'none';
-    revealBtn.style.display  = 'block';
-    rateRow.style.display    = 'none';
-  }
-}
-
-function listenSpeak() {
-  // トグル動作（発話中に押すと停止）
-  if (_isSpeaking) { stopSpeak(); return; }
-  const w = State.listenQueue[State.listenIdx];
-  if (!w) return;
-  speak(w.word);
-}
-
-function listenReveal() {
-  State.listenRevealed = true;
-  renderListen();
-  // 描画完了後 200ms 待ってから発音（DOM更新を待つ）
-  const w = State.listenQueue[State.listenIdx];
-  if (w) setTimeout(() => speak(w.word), 200);
-}
-
-function listenRate(rating) {
-  stopSpeak(); // ← 次のカードへ移動前に必ず停止
-
-  const w = State.listenQueue[State.listenIdx];
-  if (w) State.progress[w.id] = (rating === 'ok') ? 'known' : 'weak';
-  save(); updateHeader();
-
-  State.listenIdx++;
-  State.listenRevealed = false;
-  renderListen();
-}
-
-// =====================================================
-// RESULT
-// =====================================================
-function showResult() {
-  stopSpeak();
-  updateStreak();
-  save();
-
-  const isQuiz   = State.currentMode === 'quiz';
-  const score    = isQuiz ? State.quizScore + ' / ' + State.quizQueue.length
-                          : getMasteredCount() + ' / ' + (State.vocab?.total || 0);
-  const pct      = isQuiz
-    ? State.quizScore / Math.max(State.quizQueue.length, 1) * 100
-    : getMasteredCount() / Math.max(State.vocab?.total || 1, 1) * 100;
-  const msg      = pct >= 80 ? '素晴らしい！高得点です！🎉'
-                 : pct >= 60 ? 'よく頑張りました！💪' : '復習を続けよう！📚';
-
-  document.getElementById('res-score').textContent  = score;
-  document.getElementById('res-streak').textContent = State.streak + '日連続学習中🔥';
-  document.getElementById('res-msg').textContent    = msg;
-
-  showScreen('result');
-  spawnConfetti(8);
-}
-
-function retrySession() {
-  stopSpeak();
-  const weak = getWeakWords();
-  if (!weak.length) { goHome(); return; }
-  State.currentTopic = { id: '_weak', name: 'Weak Words', icon: '⚑', count: weak.length };
-  State.currentMode  = 'full';
-  startFlash(shuffle(weak));
-}
-
-// =====================================================
-// CONFETTI
-// =====================================================
-const CONFETTI_COLORS = ['#1F4E79','#2EC4B6','#F4A261','#E63946','#43A047','#7B2FBE','#FFB300'];
-function spawnConfetti(n) {
-  for (let i = 0; i < n; i++) {
-    setTimeout(() => {
-      const el = document.createElement('div');
-      el.className  = 'confetti-piece';
-      el.style.cssText = `left:${Math.random()*100}vw;top:-10px;`
-        + `background:${CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)]};`
-        + `transform:rotate(${Math.random()*360}deg);`
-        + `animation-duration:${1 + Math.random()}s;`
-        + `animation-delay:${Math.random() * .3}s`;
-      document.body.appendChild(el);
-      setTimeout(() => el.remove(), 2000);
-    }, i * 80);
-  }
-}
-
-// =====================================================
-// TOAST
-// =====================================================
-function showToast(msg) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2200);
-}
-
-// =====================================================
-// INIT
-// =====================================================
-async function init() {
-  load();
-  initVoice();
-
-  try {
-    const res = await fetch('vocabulary.json');
-    if (!res.ok) throw new Error('fetch failed');
-    State.vocab = await res.json();
-  } catch(e) {
-    document.getElementById('app').innerHTML =
-      '<div style="padding:40px;text-align:center;font-size:15px;color:#666;line-height:1.8">' +
-      '⚠️ データ読み込みエラー<br>' +
-      'ローカルファイルとして開くとJSONが読めない場合があります。<br>' +
-      'GitHub Pages等のサーバーから開いてください。</div>';
-    return;
-  }
-
-  showScreen('home');
-  updateHeader();
-}
-
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', () => App.init());
+// タブ非表示時に音声停止
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && App.stopSpeak) App.stopSpeak();
+});

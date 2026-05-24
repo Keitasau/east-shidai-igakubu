@@ -2,243 +2,238 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<meta name="theme-color" content="#023E8A">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta property="og:title" content="医学部英語 重要語彙マスター">
-<meta property="og:description" content="関東私大医学部12大学 512語 — フラッシュカード・4択クイズ・リスニング">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>医学部英語 重要語彙マスター</title>
 <link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Noto+Sans+JP:wght@300;400;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
 </head>
 <body>
-<div id="app">
 
-<!-- ====== HEADER ====== -->
-<header class="app-header">
+<!-- ANIMATED BG LAYERS -->
+<div id="ocean-bg">
+  <div class="ocean-gradient" id="ocean-gradient"></div>
+  <div class="creatures-layer" id="creatures-layer"></div>
+  <div class="coral-layer" id="coral-layer"></div>
+  <div class="wave wave1"></div>
+  <div class="wave wave2"></div>
+  <div class="wave wave3"></div>
+  <div class="bubbles" id="bubbles"></div>
+  <div class="particles" id="particles"></div>
+</div>
+
+<!-- HEADER -->
+<header id="app-header">
   <div class="header-left">
-    <span style="font-size:24px">🏥</span>
-    <div class="logo">MVM <span>Medical Vocab Master</span></div>
+    <span class="logo-shark">🏥</span>
+    <span class="logo-text">MVM</span>
   </div>
   <div class="header-stats">
-    <div class="stat-badge" id="hd-pct">0% | 0/512</div>
-    <div class="stat-badge gold" id="hd-streak">⚑0</div>
+    <span id="stat-explored">0%</span>
+    <span class="stat-sep">|</span>
+    <span id="stat-mastered">0/130</span>
+    <span class="stat-sep">|</span>
+    <span id="stat-weak">⚑0</span>
   </div>
 </header>
 
-<!-- ====== GLOBAL PROGRESS BAR ====== -->
-<div class="progress-wrap">
-  <div class="progress-label">
-    <span id="pb-l">0%</span>
-    <span id="pb-r">0 / 512</span>
-  </div>
-  <div class="progress-bar"><div class="progress-fill" id="pb-fill" style="width:0%"></div></div>
-</div>
-
-<!-- ====== HOME ====== -->
-<div class="screen" id="scr-home">
+<!-- HOME SCREEN -->
+<div id="screen-home" class="screen active">
   <div class="home-hero">
-    <span class="hero-mascot">🏥</span>
-    <h1 class="hero-title">Medical<br>Vocab<br><span>Master</span></h1>
-    <p class="hero-sub">512語 × 関東私大医学部マスタープラン</p>
-    <span class="hero-tag">12大学 2007–2025年度 過去問</span>
+    <div class="shark-teacher" id="shark-home">
+      <div class="shark-body">🏥</div>
+      <div class="shark-bubble" id="shark-greeting">Let's master medical vocab! 🏥</div>
+    </div>
+    <h1 class="app-title">Medical<br>Vocab<br>Master</h1>
+    <p class="app-sub">512語 × 関東私大医学部マスタープラン</p>
   </div>
+
+  <div class="day-progress-strip">
+    <div id="day-scroll" class="day-scroll"></div>
+  </div>
+
   <div class="home-actions">
-    <button class="action-btn primary" onclick="showScreen('topics');renderTopics()">
-      <span class="a-icon">🌊</span>
-      <div class="a-info"><strong>今日の学習を始める</strong><span>トピック別に選んで学習</span></div>
-      <span class="a-arrow">›</span>
+    <button class="btn-primary" onclick="App.startTodaySession()">
+      <span class="btn-icon">🌊</span>
+      <span class="btn-text">今日の学習を始める</span>
     </button>
-    <button class="action-btn" onclick="showScreen('review');renderReview()">
-      <span class="a-icon">🔁</span>
-      <div class="a-info"><strong>復習モード</strong><span>弱点語 / ランダム総復習</span></div>
-      <span class="a-arrow">›</span>
+    <button class="btn-secondary" onclick="App.showScreen('screen-review')">
+      <span class="btn-icon">🔁</span>
+      <span class="btn-text">復習モード</span>
     </button>
-    <button class="action-btn" onclick="showScreen('topics');renderTopics()">
-      <span class="a-icon">🗺️</span>
-      <div class="a-info"><strong>トピック別学習</strong><span>Ch1〜Ch6 から選択</span></div>
-      <span class="a-arrow">›</span>
+    <button class="btn-ghost" onclick="App.showScreen('screen-topics')">
+      <span class="btn-icon">🗺️</span>
+      <span class="btn-text">トピック別学習</span>
     </button>
+  </div>
+
+  <div class="overall-progress">
+    <div class="prog-label">Total Progress</div>
+    <div class="prog-bar-wrap"><div class="prog-bar" id="total-progress-bar"></div></div>
+    <div class="prog-pct" id="total-progress-pct">0%</div>
   </div>
 </div>
 
-<!-- ====== TOPICS ====== -->
-<div class="screen" id="scr-topics">
-  <div class="sec-header">
-    <button class="back-btn" onclick="showScreen('home')">← Back</button>
-    <span class="sec-title">Topics</span>
+<!-- TOPICS SCREEN -->
+<div id="screen-topics" class="screen">
+  <div class="screen-header">
+    <button class="back-btn" onclick="App.showScreen('screen-home')">← Back</button>
+    <h2>Topics</h2>
   </div>
-  <div class="topic-grid" id="topic-list"></div>
+  <div class="topic-grid" id="topic-grid"></div>
 </div>
 
-<!-- ====== REVIEW ====== -->
-<div class="screen" id="scr-review">
-  <div class="sec-header">
-    <button class="back-btn" onclick="showScreen('home')">← Back</button>
-    <span class="sec-title">復習モード</span>
+<!-- TOPIC MODE MODAL -->
+<div id="topic-mode-modal" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <div class="modal-topic-badge" id="modal-topic-name">Perception Sea</div>
+    <div class="modal-topic-creature" id="modal-creature">🧠</div>
+    <h3 class="modal-title">学習モードを選んでください</h3>
+    <button class="modal-btn mode-full" id="modal-full-btn">
+      <span class="modal-btn-icon">🌊</span>
+      <div class="modal-btn-content">
+        <div class="modal-btn-title">Full Mode</div>
+        <div class="modal-btn-sub">トピック全語を一気に学習</div>
+      </div>
+      <span class="modal-btn-count" id="modal-full-count">43語</span>
+    </button>
+    <button class="modal-btn mode-step" id="modal-step-btn">
+      <span class="modal-btn-icon">🐾</span>
+      <div class="modal-btn-content">
+        <div class="modal-btn-title">Small Step Mode</div>
+        <div class="modal-btn-sub">1回10語ずつコツコツと</div>
+      </div>
+      <span class="modal-btn-count" id="modal-step-count">10語</span>
+    </button>
+    <button class="modal-cancel" onclick="App.closeTopicModal()">キャンセル</button>
   </div>
-  <div class="review-list">
-    <button class="review-btn" id="btn-weak" onclick="startWeakReview()">
+</div>
+
+<!-- REVIEW SCREEN -->
+<div id="screen-review" class="screen">
+  <div class="screen-header">
+    <button class="back-btn" onclick="App.showScreen('screen-home')">← Back</button>
+    <h2>復習モード</h2>
+  </div>
+  <div class="review-options">
+    <button class="review-btn" onclick="App.startReview('weak')">
       <span class="r-icon">⚑</span>
-      <div class="r-info"><strong>Weak Words</strong><span>間違えた語を集中復習</span></div>
+      <span class="r-label">Weak Words</span>
       <span class="r-count" id="weak-count">0語</span>
     </button>
-    <p class="weak-empty" id="weak-empty" style="display:none">まだ弱点語はありません 🎉</p>
-    <button class="review-btn" onclick="startRandomReview()">
+    <button class="review-btn" onclick="App.startReview('random')">
       <span class="r-icon">🎲</span>
-      <div class="r-info"><strong>ランダム総復習</strong><span id="r-total-count">512語から</span></div>
+      <span class="r-label">ランダム総復習</span>
+      <span class="r-count">130語から</span>
     </button>
+    <div id="topic-review-list" class="topic-review-list"></div>
   </div>
 </div>
 
-<!-- ====== FLASHCARD ====== -->
-<div class="screen" id="scr-flash">
-  <div class="study-header">
-    <button class="back-btn" onclick="stopSpeak();showScreen('home')">← Back</button>
-    <span class="study-prog-txt" id="flash-prog-txt">1 / 10</span>
-    <div class="study-mini-bar"><div class="study-mini-fill" id="flash-mini-fill" style="width:0%"></div></div>
+<!-- FLASHCARD SCREEN -->
+<div id="screen-flashcard" class="screen">
+  <div class="screen-header">
+    <button class="back-btn" id="fc-back-btn">← Back</button>
+    <div class="fc-progress-info">
+      <span id="fc-progress">1 / 10</span>
+    </div>
+    <span id="fc-topic-label" class="topic-badge"></span>
   </div>
-  <div class="card-area">
-    <div class="flashcard" id="flash-card" onclick="flipCard()">
-      <!-- 表面 -->
-      <div id="fc-front">
-        <div class="fc-label" id="fc-label">英語</div>
-        <div class="fc-word" id="fc-word">word</div>
-        <div class="fc-pos" id="fc-pos">n.</div>
-        <div class="fc-freq" id="fc-freq" style="display:none">★ 頻出語</div>
-        <div class="fc-univ" id="fc-univ" style="display:none"></div>
-        <p class="fc-hint" id="fc-hint">タップで意味を見る 👆</p>
+
+  <div class="flashcard-wrap">
+    <div class="flashcard" id="flashcard" onclick="App.flipCard()">
+      <div class="card-front">
+        <div class="card-pos" id="card-pos"></div>
+        <div class="card-word" id="card-word">perception</div>
+        <div class="card-hint">タップで意味を見る 👆</div>
       </div>
-      <!-- 裏面 -->
-      <div class="fc-back" id="fc-back">
-        <hr class="fc-sep">
-        <div class="fc-meaning" id="fc-meaning"></div>
-        <div class="fc-etym" id="fc-etym" style="display:none"></div>
-        <div class="fc-deriv" id="fc-deriv" style="display:none"></div>
-        <div class="fc-ex" id="fc-ex"></div>
-        <div class="fc-ex-ja" id="fc-ex-ja"></div>
+      <div class="card-back">
+        <div class="card-meaning" id="card-meaning">知覚；認識</div>
+        <div class="card-example" id="card-example"></div>
+        <div class="card-translation" id="card-translation"></div>
+        <div class="card-etymology" id="card-etymology"></div>
+        <div class="card-derivatives" id="card-derivatives"></div>
       </div>
     </div>
-    <p class="flip-hint">‹ Prev &nbsp;&nbsp; Next ›</p>
   </div>
-  <div class="study-actions">
-    <div class="speak-row">
-      <button class="speak-btn" id="btn-speak-flash" onclick="speakCurrentCard()">🔊 もう一度聴く</button>
+
+  <div class="fc-actions">
+    <button class="fc-btn fc-skip" onclick="App.fcSkip()">スキップ</button>
+    <button class="fc-btn fc-knew" onclick="App.fcKnew()">知ってた ✓</button>
+  </div>
+  <div class="fc-nav">
+    <button class="fc-btn-sm" onclick="App.fcPrev()">‹ Prev</button>
+    <button class="fc-btn-next" onclick="App.fcNext()">Next ›</button>
+  </div>
+</div>
+
+<!-- QUIZ SCREEN -->
+<div id="screen-quiz" class="screen">
+  <div class="screen-header">
+    <button class="back-btn" id="quiz-back-btn">← Back</button>
+    <div class="quiz-meta">
+      <span id="quiz-progress">1/10</span>
+      <span id="quiz-mode-label" class="mode-badge">英→日</span>
     </div>
-    <div class="rate-row" id="rate-row">
-      <button class="rate-btn skip" onclick="rateWord('skip')">スキップ</button>
-      <button class="rate-btn knew" onclick="rateWord('knew')">知ってた ✓</button>
+  </div>
+
+  <div class="quiz-timer-wrap">
+    <div class="quiz-timer-bar" id="quiz-timer-bar"></div>
+    <span class="quiz-timer-text" id="quiz-timer-text">10</span>
+  </div>
+
+  <div class="quiz-question-wrap">
+    <div class="quiz-word" id="quiz-word">perception</div>
+    <div class="quiz-listen-btn" id="quiz-listen-btn" style="display:none">
+      <button onclick="App.playCurrentWord()">🔊 もう一度聴く</button>
+    </div>
+  </div>
+
+  <div class="quiz-choices" id="quiz-choices"></div>
+
+  <div class="quiz-feedback" id="quiz-feedback" style="display:none">
+    <div class="feedback-header">
+      <div class="feedback-icon" id="feedback-icon"></div>
+      <div class="feedback-msg" id="feedback-msg"></div>
+    </div>
+    <div class="feedback-correct" id="feedback-correct"></div>
+    <div class="feedback-hint" id="feedback-hint" style="display:none">
+      <div class="hint-etymology" id="hint-etymology"></div>
+      <div class="hint-derivatives" id="hint-derivatives"></div>
+      <div class="hint-example" id="hint-example"></div>
     </div>
   </div>
 </div>
 
-<!-- ====== QUIZ ====== -->
-<div class="screen" id="scr-quiz">
-  <div class="quiz-header">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-      <button class="back-btn" onclick="stopSpeak();showScreen('home')">← Back</button>
-      <span class="quiz-num" id="quiz-num">1/10 英→日</span>
-      <span class="quiz-score-live" id="quiz-score-live">0点</span>
-    </div>
-    <div class="quiz-q-bar"><div class="quiz-q-fill" id="quiz-q-fill" style="width:0%"></div></div>
-  </div>
-  <div class="quiz-body">
-    <div class="quiz-q-card">
-      <div class="q-word" id="q-word"></div>
-      <div class="q-pos" id="q-pos"></div>
-      <div class="q-freq" id="q-freq" style="display:none">★ 頻出語</div>
-      <div class="q-ch" id="q-ch"></div>
-      <button class="q-speak-btn" id="q-speak-btn" onclick="speakQuizWord()">🔊 発音</button>
-    </div>
-    <div class="choices-grid" id="choices-grid"></div>
-    <div class="quiz-feedback" id="quiz-feedback" style="display:none"></div>
-    <div id="quiz-next-wrap" style="display:none">
-      <button class="quiz-next-btn" id="quiz-next-btn" onclick="nextQuiz()">次の問題 ›</button>
+<!-- RESULTS SCREEN -->
+<div id="screen-results" class="screen">
+  <div class="results-wrap">
+    <div class="results-shark">🏥</div>
+    <h2 class="results-title" id="results-title">Session Complete!</h2>
+    <div class="results-score" id="results-score">8 / 10</div>
+    <div class="results-comment" id="results-comment"></div>
+    <div class="results-stats-grid" id="results-stats"></div>
+    <div class="results-actions">
+      <button class="btn-primary" onclick="App.goHome()">ホームへ</button>
+      <button class="btn-secondary" onclick="App.retryWeak()">Weak Words 再挑戦</button>
     </div>
   </div>
+  <div class="celebration" id="celebration"></div>
 </div>
 
-<!-- ====== LISTEN ====== -->
-<div class="screen" id="scr-listen">
-  <div class="study-header">
-    <button class="back-btn" onclick="stopSpeak();showScreen('home')">← Back</button>
-    <span class="study-prog-txt" id="listen-prog-txt">1 / 10</span>
-    <div class="study-mini-bar"><div class="study-mini-fill" id="listen-mini-fill" style="width:0%"></div></div>
-  </div>
-  <div class="listen-body">
-    <div class="listen-card">
-      <div class="listen-status" id="listen-status">音声を聞いて語を当てよう</div>
-      <!-- 発音ボタン（常時表示） -->
-      <button class="speak-big" id="listen-speak-btn" onclick="listenSpeak()">🔊</button>
-      <!-- 音声波形アニメ -->
-      <div class="wave" id="wave">
-        <div class="wb" style="height:5px"></div>
-        <div class="wb" style="height:12px"></div>
-        <div class="wb" style="height:20px"></div>
-        <div class="wb" style="height:14px"></div>
-        <div class="wb" style="height:7px"></div>
-      </div>
-      <!-- 答え表示エリア（reveal後） -->
-      <div id="listen-reveal-area" style="display:none">
-        <div class="listen-word" id="listen-word"></div>
-        <div class="listen-meaning" id="listen-meaning"></div>
-        <div class="listen-etym" id="listen-etym" style="display:none"></div>
-      </div>
-    </div>
-    <!-- reveal前のボタン -->
-    <button class="listen-btn reveal" id="listen-reveal-btn" onclick="listenReveal()">語を表示する 👁</button>
-    <!-- reveal後の評価ボタン -->
-    <div class="listen-actions" id="listen-rate-row" style="display:none">
-      <button class="listen-btn ng" onclick="listenRate('ng')">✗ 聞き取れなかった</button>
-      <button class="listen-btn ok" onclick="listenRate('ok')">✓ OK</button>
-    </div>
-  </div>
+<!-- CORRECT BURST OVERLAY -->
+<div id="correct-burst" class="correct-burst" style="display:none">
+  <div class="burst-content" id="burst-content"></div>
 </div>
 
-<!-- ====== RESULT ====== -->
-<div class="screen result-screen" id="scr-result">
-  <div class="result-mascot">🦈</div>
-  <div class="result-title">Session Complete!</div>
-  <div class="result-score" id="res-score">8 / 10</div>
-  <div class="result-sub" id="res-streak"></div>
-  <div class="result-msg" id="res-msg">よく頑張りました！</div>
-  <div class="result-btns">
-    <button class="result-btn home" onclick="goHome()">ホームへ</button>
-    <button class="result-btn retry" onclick="retrySession()">Weak Words 再挑戦</button>
+<!-- SHARK OVERLAY -->
+<div id="shark-overlay" class="shark-overlay" style="display:none">
+  <div class="shark-msg-box">
+    <span class="shark-big">🏥</span>
+    <p id="shark-overlay-msg"></p>
+    <button onclick="App.closeShark()">OK!</button>
   </div>
 </div>
-
-</div><!-- /#app -->
-
-<!-- ====== MODE MODAL ====== -->
-<div class="mode-modal hidden" id="mode-modal">
-  <div class="mode-sheet">
-    <h3 id="modal-title">学習モードを選んでください</h3>
-    <p class="mode-topic-sub" id="modal-sub"></p>
-    <div class="mode-btns">
-      <button class="mode-btn" onclick="startMode('full')">
-        <span class="m-icon">🌊</span>
-        <div class="m-info"><strong>Full Mode</strong><span id="mode-full-count">トピック全語を一気に学習</span></div>
-      </button>
-      <button class="mode-btn" onclick="startMode('small')">
-        <span class="m-icon">🐾</span>
-        <div class="m-info"><strong>Small Step Mode</strong><span>1回10語ずつコツコツと</span></div>
-      </button>
-      <button class="mode-btn" onclick="startMode('quiz')">
-        <span class="m-icon">🎯</span>
-        <div class="m-info"><strong>4択クイズ</strong><span>意味を選んで確認</span></div>
-      </button>
-      <button class="mode-btn" onclick="startMode('listen')">
-        <span class="m-icon">🎧</span>
-        <div class="m-info"><strong>リスニング</strong><span>聞いて語を当てる</span></div>
-      </button>
-    </div>
-    <button class="mode-cancel" onclick="closeModal()">キャンセル</button>
-  </div>
-</div>
-
-<!-- ====== TOAST ====== -->
-<div class="toast" id="toast"></div>
 
 <script src="app.js"></script>
 </body>
